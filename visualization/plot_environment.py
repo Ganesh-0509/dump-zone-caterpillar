@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Polygon as MplPolygon, Rectangle
 from shapely.geometry import Polygon
 
-from mapping.occupancy_grid import GridMetadata, CELL_EMPTY, CELL_INVALID
+from mapping.occupancy_grid import GridMetadata, CELL_EMPTY, CELL_INVALID, CELL_DUMP_PILE
 
 if TYPE_CHECKING:
     from simulation.truck_agent import Truck
@@ -91,7 +91,16 @@ def plot_grid_environment(
             world_x = metadata.origin_x + grid_x * metadata.cell_size
             world_y = metadata.origin_y + grid_y * metadata.cell_size
 
-            rect_color = "lightgray" if cell_state == CELL_EMPTY else "red"
+            if cell_state == CELL_DUMP_PILE:
+                rect_color = "darkred"
+                alpha = 0.7
+            elif cell_state == CELL_EMPTY:
+                rect_color = "lightgray"
+                alpha = 0.4
+            else:
+                rect_color = "gray"
+                alpha = 0.3
+
             rect = Rectangle(
                 (world_x, world_y),
                 metadata.cell_size,
@@ -99,7 +108,7 @@ def plot_grid_environment(
                 facecolor=rect_color,
                 edgecolor="gray",
                 linewidth=0.3,
-                alpha=0.4,
+                alpha=alpha,
             )
             axis.add_patch(rect)
 
@@ -131,9 +140,17 @@ def plot_simulation_state(
     metadata: GridMetadata,
     trucks: list[Truck],
     step: int = 0,
+    block: bool = True,
 ) -> None:
     """Plot simulation state including trucks."""
-    fig, axis = plt.subplots(figsize=(13, 9))
+    # To support animation, we use the current figure and axis
+    fig = plt.gcf()
+    fig.set_size_inches(13, 9)
+    axis = plt.gca()
+    
+    # We MUST clear the axis completely, otherwise adding thousands of overlapping 
+    # patches over multiple frames causes matplotlib to crash or hang
+    axis.clear()
 
     colormap = plt.get_cmap("tab20")
 
@@ -161,7 +178,16 @@ def plot_simulation_state(
             world_x = metadata.origin_x + grid_x * metadata.cell_size
             world_y = metadata.origin_y + grid_y * metadata.cell_size
 
-            rect_color = "lightgray" if cell_state == CELL_EMPTY else "red"
+            if cell_state == CELL_DUMP_PILE:
+                rect_color = "darkred"
+                alpha = 0.7
+            elif cell_state == CELL_EMPTY:
+                rect_color = "lightgray"
+                alpha = 0.2
+            else:
+                rect_color = "gray"
+                alpha = 0.3
+
             rect = Rectangle(
                 (world_x, world_y),
                 metadata.cell_size,
@@ -169,7 +195,7 @@ def plot_simulation_state(
                 facecolor=rect_color,
                 edgecolor="gray",
                 linewidth=0.2,
-                alpha=0.2,
+                alpha=alpha,
             )
             axis.add_patch(rect)
 
@@ -210,4 +236,5 @@ def plot_simulation_state(
     axis.legend(loc="upper right", fontsize=10)
 
     plt.tight_layout()
-    plt.show()
+    if block:
+        plt.show()

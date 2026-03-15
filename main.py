@@ -36,24 +36,20 @@ def main() -> None:
     # Phase 3: Truck Simulation
     generator_config = TruckGeneratorConfig(spawn_interval=10, truck_speed=0.5)
     sim_config = SimulationConfig(max_steps=250, generator_config=generator_config)
-    engine = SimulationEngine(zones, sim_config)
+    engine = SimulationEngine(zones, sim_config, grid, height_map, metadata)
 
     print(f"Starting simulation with max_steps={sim_config.max_steps}")
 
-    # Run simulation
-    engine.run()
+    # Run simulation with an animated visualization every 5 steps
+    engine.run(visualize=True, viz_interval=5, dump_polygon=dump_polygon)
 
     print(f"\nSimulation complete!")
     stats = engine.get_statistics()
     print(f"Total trucks spawned: {stats['total_trucks']}")
 
-    # Visualizations
-    plot_dump_environment(dump_polygon, zones)
-    plot_grid_environment(dump_polygon, zones, grid, metadata)
-
-    # Show simulation state at final step with trucks
-    if engine.trucks:
-        plot_simulation_state(dump_polygon, zones, grid, metadata, engine.trucks, engine.current_step)
+    # Keep the final state visible
+    import matplotlib.pyplot as plt
+    plt.show()
 
 
 if __name__ == "__main__":

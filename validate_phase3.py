@@ -6,6 +6,8 @@ from pathlib import Path
 
 from geometry.polygon_loader import load_dump_polygon
 from geometry.zone_generator import ZoneGenerationConfig, generate_voronoi_zones
+from mapping.occupancy_grid import create_grid_from_polygon
+from mapping.terrain_map import initialize_height_map
 from simulation.simulation_engine import SimulationConfig, SimulationEngine
 from simulation.truck_generator import TruckGeneratorConfig
 from simulation.truck_agent import TruckState
@@ -97,9 +99,12 @@ def validate_simulation_engine() -> bool:
     zone_config = ZoneGenerationConfig(zone_count=4, random_seed=42)
     zones = generate_voronoi_zones(dump_polygon, zone_config)
 
+    grid, metadata = create_grid_from_polygon(dump_polygon, cell_size=1.0)
+    height_map = initialize_height_map(grid.shape)
+
     gen_config = TruckGeneratorConfig(spawn_interval=20, truck_speed=1.0)
     sim_config = SimulationConfig(max_steps=100, generator_config=gen_config)
-    engine = SimulationEngine(zones, sim_config)
+    engine = SimulationEngine(zones, sim_config, grid, height_map, metadata)
 
     engine.run()
 

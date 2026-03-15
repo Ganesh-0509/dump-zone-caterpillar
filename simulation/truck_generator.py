@@ -4,9 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
 from shapely.geometry import Polygon
 
 from simulation.truck_agent import Truck, TruckState
+from planning.dump_spot_selector import select_dump_spot
+from mapping.occupancy_grid import GridMetadata
 
 
 @dataclass
