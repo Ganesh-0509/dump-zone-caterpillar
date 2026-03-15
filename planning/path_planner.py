@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import heapq
 
+from typing import TYPE_CHECKING
+
 import numpy as np
 
 from mapping.occupancy_grid import CELL_EMPTY
+
+if TYPE_CHECKING:
+    from planning.traffic_manager import TrafficManager
 
 
 def heuristic(a: tuple[int, int], b: tuple[int, int]) -> float:
@@ -21,6 +26,8 @@ def get_neighbors(
     grid_width: int,
     grid_height: int,
     occupancy_grid: np.ndarray,
+    timestep: int,
+    traffic_manager: TrafficManager | None = None,
 ) -> list[tuple[int, int]]:
     """Get valid 8-connected neighbors."""
     neighbors = []
@@ -37,8 +44,11 @@ def get_neighbors(
             # Check obstacles (must be CELL_EMPTY to traverse)
             # Currently ignoring CELL_TRUCK for simplicity, but strictly avoiding Piles/Invalid
             if occupancy_grid[ny, nx] == CELL_EMPTY:
-                neighbors.append((nx, ny))
+                # Check traffic manager reservation
+                if traffic_manager is None or traffic_manager.check_cell_available((nx, ny), timestep + 1):
+                    neighbors.append((nx, ny))
                 
+    # We can also add an option to wait in place if that's valid, but omitting for simplicity here.
     return neighbors
 
 
@@ -46,6 +56,8 @@ def plan_path(
     start_cell: tuple[int, int],
     goal_cell: tuple[int, int],
     occupancy_grid: np.ndarray,
+    start_time: int = 0,
+    traffic_manager: TrafficManager | None = None,
 ) -> list[tuple[int, int]]:
     """Find shortest path from start_cell to goal_cell using A*.
     
@@ -56,62 +68,72 @@ def plan_path(
         
     grid_height, grid_width = occupancy_grid.shape
     
-    # Priority queue: (f_score, counter, (x, y))
+    # Priority queue: (f_score, counter, (x, y, timestep))
     # counter is used to break ties when f_scores are equal
     open_set = []
     counter = 0
-    heapq.heappush(open_set, (0, counter, start_cell))
+    start_node = (start_cell[0], start_cell[1], start_time)
+    heapq.heappush(open_set, (0, counter, start_node))
     
     # Keep track of where we came from
     came_from = {}
     
     # Cost from start to node 
-    g_score = {start_cell: 0.0}
+    g_score = {start_node: 0.0}
     
     # Estimated total cost from start to goal through node
-    f_score = {start_cell: heuristic(start_cell, goal_cell)}
+    f_score = {start_node: heuristic(start_cell, goal_cell)}
     
     # Keep track of nodes in open_set for faster lookup
-    open_set_hash = {start_cell}
+    open_set_hash = {start_node}
     
-    while open_set:
-        current = heapq.heappop(open_set)[2]
-        open_set_hash.remove(current)
+    # Fallback / limit to prevent infinite search on unreachable goals
+    max_iterations = 5000
+    iterations = 0
+    
+    while open_set and iterations < max_iterations:
+        iterations += 1
+        current_node = heapq.heappop(open_set)[2]
+        open_set_hash.remove(current_node)
         
-        if current == goal_cell:
+        current_cell = (current_node[0], current_node[1])
+        current_t = current_node[2]
+        
+        if current_cell == goal_cell:
             # Reconstruct path
             path = []
-            while current in came_from:
-                path.append(current)
-                current = came_from[current]
-            path.append(start_cell)
+            curr = current_node
+            while curr in came_from:
+                path.append((curr[0], curr[1]))
+                curr = came_from[curr]
+            path.append((start_node[0], start_node[1]))
             return path[::-1]  # Reverse to get start -> goal
             
-        current_g = g_score[current]
+        current_g = g_score[current_node]
         
-        for neighbor in get_neighbors(current[0], current[1], grid_width, grid_height, occupancy_grid):
+        for neighbor_cell in get_neighbors(current_cell[0], current_cell[1], grid_width, grid_height, occupancy_grid, current_t, traffic_manager):
+            neighbor_t = current_t + 1
+            neighbor_node = (neighbor_cell[0], neighbor_cell[1], neighbor_t)
+            
             # Cost is 1 for cardinal, 1.414 for diagonal
-            dx = neighbor[0] - current[0]
-            dy = neighbor[1] - current[1]
+            dx = neighbor_cell[0] - current_cell[0]
+            dy = neighbor_cell[1] - current_cell[1]
             step_cost = 1.0 if dx == 0 or dy == 0 else 1.41421356
             
             tentative_g_score = current_g + step_cost
             
-            if neighbor not in g_score or tentative_g_score < g_score[neighbor]:
+            if neighbor_node not in g_score or tentative_g_score < g_score[neighbor_node]:
                 # This path is better than any previous one
-                came_from[neighbor] = current
-                g_score[neighbor] = tentative_g_score
+                came_from[neighbor_node] = current_node
+                g_score[neighbor_node] = tentative_g_score
                 
-                # We want to give a slight penalty to turns:
-                # But since true turning penalty requires tracking previous direction,
-                # Euclidean distance naturally looks pretty good
-                h = heuristic(neighbor, goal_cell)
-                f_score[neighbor] = tentative_g_score + h
+                h = heuristic(neighbor_cell, goal_cell)
+                f_score[neighbor_node] = tentative_g_score + h
                 
-                if neighbor not in open_set_hash:
+                if neighbor_node not in open_set_hash:
                     counter += 1
-                    heapq.heappush(open_set, (f_score[neighbor], counter, neighbor))
-                    open_set_hash.add(neighbor)
+                    heapq.heappush(open_set, (f_score[neighbor_node], counter, neighbor_node))
+                    open_set_hash.add(neighbor_node)
                     
     # No path found
     return []

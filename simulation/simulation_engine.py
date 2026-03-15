@@ -12,6 +12,7 @@ from simulation.truck_generator import TruckGenerator, TruckGeneratorConfig
 from planning.dump_spot_selector import select_dump_spot
 from mapping.occupancy_grid import GridMetadata, CELL_DUMP_PILE, grid_to_world
 from mapping.terrain_map import add_dump
+from planning.traffic_manager import TrafficManager
 
 
 @dataclass
@@ -43,6 +44,7 @@ class SimulationEngine:
         self.metadata = metadata
         self.generator = TruckGenerator(zones, config.generator_config)
         self.trucks: list[Truck] = []
+        self.traffic_manager = TrafficManager()
         self.current_step = 0
         self.history: list[dict] = []
 
@@ -70,13 +72,27 @@ class SimulationEngine:
                     self.metadata.cell_size,
                 )
                 new_truck.set_target(dump_world_x, dump_world_y)
-                new_truck.compute_path(self.occupancy_grid, self.metadata, dump_world_x, dump_world_y)
+                new_truck.compute_path(
+                    self.occupancy_grid,
+                    self.metadata,
+                    dump_world_x,
+                    dump_world_y,
+                    self.traffic_manager,
+                    self.current_step
+                )
             except ValueError:
                 # No valid dump spot; use zone centroid fallback
                 fallback_x = new_truck.assigned_zone.centroid.x
                 fallback_y = new_truck.assigned_zone.centroid.y
                 new_truck.set_target(fallback_x, fallback_y)
-                new_truck.compute_path(self.occupancy_grid, self.metadata, fallback_x, fallback_y)
+                new_truck.compute_path(
+                    self.occupancy_grid,
+                    self.metadata,
+                    fallback_x,
+                    fallback_y,
+                    self.traffic_manager,
+                    self.current_step
+                )
 
             self.trucks.append(new_truck)
 
@@ -87,11 +103,19 @@ class SimulationEngine:
                 if truck.path and truck.current_path_index < len(truck.path):
                     next_node = truck.path[truck.current_path_index]
                     if self.occupancy_grid[next_node[1], next_node[0]] != 0: # CELL_EMPTY
-                        truck.compute_path(self.occupancy_grid, self.metadata, truck.target_x, truck.target_y)
+                        truck.compute_path(
+                            self.occupancy_grid,
+                            self.metadata,
+                            truck.target_x,
+                            truck.target_y,
+                            self.traffic_manager,
+                            self.current_step
+                        )
                         
                 target_reached = truck.move_along_path(self.metadata)
                 if target_reached:
                     truck.state = TruckState.DUMPING
+                    self.traffic_manager.release_reservations(truck.truck_id)
 
             elif truck.state == TruckState.DUMPING:
                 # Update occupancy grid and height map
@@ -121,6 +145,8 @@ class SimulationEngine:
                     self.metadata,
                     self.config.generator_config.entrance_x,
                     self.config.generator_config.entrance_y,
+                    self.traffic_manager,
+                    self.current_step
                 )
 
             elif truck.state == TruckState.RETURNING:
@@ -128,12 +154,20 @@ class SimulationEngine:
                 if truck.path and truck.current_path_index < len(truck.path):
                     next_node = truck.path[truck.current_path_index]
                     if self.occupancy_grid[next_node[1], next_node[0]] != 0: # CELL_EMPTY
-                        truck.compute_path(self.occupancy_grid, self.metadata, truck.target_x, truck.target_y)
+                        truck.compute_path(
+                            self.occupancy_grid,
+                            self.metadata,
+                            truck.target_x,
+                            truck.target_y,
+                            self.traffic_manager,
+                            self.current_step
+                        )
                         
                 # Return to entrance
                 target_reached = truck.move_along_path(self.metadata)
                 if target_reached:
                     truck.state = TruckState.IDLE
+                    self.traffic_manager.release_reservations(truck.truck_id)
 
         # Record state snapshot for visualization
         snapshot = {

@@ -48,6 +48,8 @@ class Truck:
         metadata: GridMetadata,
         goal_x: float,
         goal_y: float,
+        traffic_manager=None,
+        current_step: int = 0,
     ) -> bool:
         """Compute path to world coordinates using A* search."""
         start_grid_x, start_grid_y = world_to_grid(
@@ -73,18 +75,22 @@ class Truck:
         goal_grid_x = max(0, min(width - 1, goal_grid_x))
         goal_grid_y = max(0, min(height - 1, goal_grid_y))
         
+        if traffic_manager:
+            traffic_manager.release_reservations(self.truck_id)
+        
         planned_path = plan_path(
             (start_grid_x, start_grid_y),
             (goal_grid_x, goal_grid_y),
             occupancy_grid,
+            start_time=current_step,
+            traffic_manager=traffic_manager,
         )
         
         if planned_path:
             self.path = planned_path
             self.current_path_index = 0
-            
-            # Set target to first node
-            # (which might be the node we are already on, but move_along_path handles it)
+            if traffic_manager:
+                traffic_manager.reserve_path(self.truck_id, self.path, current_step)
             return True
             
         return False
