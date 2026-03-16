@@ -274,30 +274,8 @@ class SimulationEngine:
         dump_polygon: Polygon | None = None,
     ) -> None:
         """Run simulation for configured max_steps."""
-        if visualize:
-            import matplotlib.pyplot as plt
-            from visualization.plot_environment import plot_simulation_state
-
-            if dump_polygon is None:
-                raise ValueError("dump_polygon must be provided for visualization.")
-
         while self.current_step < self.config.max_steps:
             self.step()
-
-            if visualize and self.current_step % viz_interval == 0:
-                plt.clf()
-                plot_simulation_state(
-                    dump_polygon,
-                    self.zones,
-                    self.occupancy_grid,
-                    self.metadata,
-                    self.trucks,
-                    height_map=self.height_map,
-                    step=self.current_step,
-                    block=False,
-                    analytics_summary=self.analytics.get_summary()
-                )
-                plt.pause(0.1)
 
         print("\nSimulation Results")
         summary = self.analytics.get_summary()

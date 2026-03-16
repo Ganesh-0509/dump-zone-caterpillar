@@ -8,9 +8,7 @@ from typing import Iterable
 
 from shapely.geometry import Polygon
 
-
 REQUIRED_KEY = "dump_polygon"
-
 
 def _validate_coordinate_pairs(coordinates: Iterable[Iterable[float]]) -> list[tuple[float, float]]:
     """Validate coordinate pairs and return them as a list of tuples."""
