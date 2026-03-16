@@ -16,6 +16,8 @@ from planning.traffic_manager import TrafficManager
 from planning.spatial_index import SpatialIndex
 from planning.fleet_manager import FleetManager
 from planning.analytics_manager import AnalyticsManager
+from planning.deadlock_manager import DeadlockManager
+from planning.slope_validator import SlopeValidator
 
 
 @dataclass
@@ -55,6 +57,8 @@ class SimulationEngine:
         self.traffic_manager = TrafficManager()
         self.spatial_index = SpatialIndex()
         self.analytics = AnalyticsManager()
+        self.deadlock_manager = DeadlockManager(wait_threshold=20)
+        self.slope_validator = SlopeValidator(max_slope=0.6)
         self.current_step = 0
         self.history: list[dict] = []
 
@@ -70,6 +74,9 @@ class SimulationEngine:
                     new_truck.assigned_zone,
                     self.occupancy_grid,
                     self.metadata,
+                    height_grid=self.height_map,
+                    truck_position=(new_truck.position_x, new_truck.position_y),
+                    slope_validator=self.slope_validator,
                 )
                 new_truck.set_dump_location(dump_grid_x, dump_grid_y)
 
@@ -158,6 +165,16 @@ class SimulationEngine:
                             truck.payload,
                             self.metadata,
                         )
+                        
+                        # Record slope/layer growth metrics
+                        slope = self.slope_validator.compute_slope(
+                            self.height_map,
+                            truck.dump_grid_x,
+                            truck.dump_grid_y,
+                            self.metadata.cell_size
+                        )
+                        max_height = self.height_map[truck.dump_grid_y, truck.dump_grid_x]
+                        self.analytics.record_layer_growth(slope, max_height)
                     except IndexError:
                         pass
                         
@@ -234,6 +251,19 @@ class SimulationEngine:
             self.metadata,
             self.current_step
         )
+
+        # Detect and resolve deadlocks
+        stuck_trucks = self.deadlock_manager.update(self.trucks, self.traffic_manager)
+        for truck_id in stuck_trucks:
+            truck = next((t for t in self.trucks if t.truck_id == truck_id), None)
+            if truck:
+                # Force replan by clearing path
+                self.traffic_manager.release_reservations(truck_id)
+                truck.path = []
+                truck.current_path_index = 0
+                if hasattr(truck, 'smoothed_path'):
+                    truck.smoothed_path = []
+                    truck.current_smoothed_index = 0
 
         self.current_step += 1
 

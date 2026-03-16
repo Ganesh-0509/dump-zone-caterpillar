@@ -39,11 +39,39 @@ class Truck:
     state: TruckState = TruckState.IDLE
     distance_traveled: float = field(default=0.0, init=False)
     
+    # Vehicle dimensions for realistic collision and footprint modeling
+    truck_length: float = 5.0  # meters
+    truck_width: float = 2.5   # meters
+    turning_radius: float = 3.0  # meters
+    
     # Path following attributes
     path: list[tuple[int, int]] = field(default_factory=list, init=False)
-    current_path_index: int = field(default=0, init=False)    
+    current_path_index: int = field(default=0, init=False)
     smoothed_path: list[tuple[float, float]] = field(default_factory=list, init=False)
     current_smoothed_index: int = field(default=0, init=False)
+
+    def get_footprint_polygon(self, heading: float = 0.0) -> Polygon:
+        """Get the truck's footprint as a polygon."""
+        import math
+        
+        cos_h = math.cos(heading)
+        sin_h = math.sin(heading)
+        
+        corners = [
+            (-self.truck_width / 2, -self.truck_length / 2),
+            (self.truck_width / 2, -self.truck_length / 2),
+            (self.truck_width / 2, self.truck_length / 2),
+            (-self.truck_width / 2, self.truck_length / 2),
+        ]
+        
+        rotated = []
+        for x, y in corners:
+            rx = x * cos_h - y * sin_h
+            ry = x * sin_h + y * cos_h
+            rotated.append((self.position_x + rx, self.position_y + ry))
+        
+        return Polygon(rotated)
+
     def compute_path(
         self,
         occupancy_grid: np.ndarray,

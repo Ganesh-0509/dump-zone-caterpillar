@@ -24,6 +24,12 @@ class AnalyticsManager:
         self.total_dumps = 0
         self.zone_utilization: dict[int, float] = {}
 
+        # Slope and layering metrics
+        self.pile_slopes: list[float] = []
+        self.max_pile_height = 0.0
+        self.average_pile_slope = 0.0
+        self.layer_growth_events = 0
+
         # Cached masks for fast computations
         self.zone_masks: dict[int, np.ndarray] = {}
         self.zone_total_cells: dict[int, int] = {}
@@ -102,6 +108,15 @@ class AnalyticsManager:
         # Dump Throughput
         self.dump_throughput = self.total_payload_dumped / self.current_step
 
+    def record_layer_growth(self, avg_slope: float, max_height: float) -> None:
+        """Record statistics after a dump operation."""
+        self.pile_slopes.append(avg_slope)
+        self.max_pile_height = max(self.max_pile_height, max_height)
+        self.layer_growth_events += 1
+        
+        if self.pile_slopes:
+            self.average_pile_slope = sum(self.pile_slopes) / len(self.pile_slopes)
+
     def get_summary(self) -> dict:
         """Returns a dictionary containing the tracked metrics."""
         avg_cycle_time = sum(self.cycle_times) / len(self.cycle_times) if self.cycle_times else 0.0
@@ -112,4 +127,7 @@ class AnalyticsManager:
             "dump_throughput": self.dump_throughput,
             "total_dumps": self.total_dumps,
             "zone_utilization": self.zone_utilization.copy(),
+            "average_pile_slope": self.average_pile_slope,
+            "max_pile_height": self.max_pile_height,
+            "layer_growth_events": self.layer_growth_events,
         }
