@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Polygon as MplPolygon, Rectangle
 from shapely.geometry import Polygon
 
-from mapping.occupancy_grid import GridMetadata, CELL_EMPTY, CELL_INVALID, CELL_DUMP_PILE
+from mapping.occupancy_grid import GridMetadata, CELL_EMPTY, CELL_INVALID, CELL_DUMP_PILE, grid_to_world
 
 if TYPE_CHECKING:
     from simulation.truck_agent import Truck
@@ -139,8 +139,10 @@ def plot_simulation_state(
     occupancy_grid: np.ndarray,
     metadata: GridMetadata,
     trucks: list[Truck],
+    height_map: np.ndarray | None = None,
     step: int = 0,
     block: bool = True,
+    analytics_summary: dict | None = None,
 ) -> None:
     """Plot simulation state including trucks."""
     # To support animation, we use the current figure and axis
@@ -166,6 +168,22 @@ def plot_simulation_state(
             linewidth=0.75,
         )
         axis.add_patch(patch)
+        
+        # Zone utilization label
+        if analytics_summary and "zone_utilization" in analytics_summary:
+            utilization = analytics_summary["zone_utilization"].get(index, 0.0)
+            centroid = zone.centroid
+            axis.text(
+                centroid.x,
+                centroid.y,
+                f"Zone {index + 1}\n{utilization * 100:.0f}% full",
+                ha="center",
+                va="center",
+                fontsize=8,
+                color="black",
+                bbox=dict(facecolor="white", alpha=0.6, edgecolor="none", pad=1),
+                zorder=10
+            )
 
     # Plot grid
     for grid_y in range(metadata.grid_height):
@@ -199,6 +217,22 @@ def plot_simulation_state(
             )
             axis.add_patch(rect)
 
+    # Plot dump height heatmap
+    if height_map is not None:
+        heatmap_data = np.ma.masked_where(height_map == 0, height_map)
+        min_x = metadata.origin_x
+        max_x = metadata.origin_x + metadata.grid_width * metadata.cell_size
+        min_y = metadata.origin_y
+        max_y = metadata.origin_y + metadata.grid_height * metadata.cell_size
+        axis.imshow(
+            heatmap_data,
+            extent=[min_x, max_x, min_y, max_y],
+            origin="lower",
+            cmap="hot",
+            alpha=0.4,
+            zorder=3,
+        )
+
     # Plot boundary
     boundary_x, boundary_y = dump_polygon.exterior.xy
     axis.plot(boundary_x, boundary_y, color="black", linewidth=2.5, label="Dump Boundary")
@@ -209,7 +243,7 @@ def plot_simulation_state(
         truck_y = [t.position_y for t in trucks]
         axis.scatter(truck_x, truck_y, color="red", s=100, marker="o", label="Trucks", zorder=5)
 
-        # Label trucks
+        # Label trucks and draw paths
         for truck in trucks:
             axis.annotate(
                 f"T{truck.truck_id}",
@@ -219,6 +253,26 @@ def plot_simulation_state(
                 fontsize=7,
                 alpha=0.7,
             )
+            
+            # Draw path
+            if getattr(truck, "smoothed_path", None) and getattr(truck, "current_smoothed_index", 0) < len(truck.smoothed_path):
+                path_world_coords = [(truck.position_x, truck.position_y)]
+                for wx, wy in truck.smoothed_path[truck.current_smoothed_index:]:
+                    path_world_coords.append((wx, wy))
+                if len(path_world_coords) > 1:
+                    px, py = zip(*path_world_coords)
+                    axis.plot(px, py, color="red", linestyle="-", linewidth=1.5, alpha=0.8, zorder=4)
+            elif getattr(truck, "path", None) and truck.current_path_index < len(truck.path):
+                # Fallback to grid path
+                path_world_coords = [(truck.position_x, truck.position_y)]
+                for node in truck.path[truck.current_path_index:]:
+                    grid_x, grid_y = node[0], node[1]
+                    wx, wy = grid_to_world(grid_x, grid_y, metadata.origin_x, metadata.origin_y, metadata.cell_size)
+                    path_world_coords.append((wx + metadata.cell_size / 2, wy + metadata.cell_size / 2))
+                
+                if len(path_world_coords) > 1:
+                    px, py = zip(*path_world_coords)
+                    axis.plot(px, py, color="red", linestyle="--", linewidth=1.0, alpha=0.6, zorder=4)
 
     min_x, min_y, max_x, max_y = dump_polygon.bounds
     pad_x = (max_x - min_x) * 0.08
@@ -234,6 +288,23 @@ def plot_simulation_state(
     axis.set_ylabel("Y Coordinate")
     axis.grid(True, alpha=0.15)
     axis.legend(loc="upper right", fontsize=10)
+
+    # Add statistics panel
+    if analytics_summary:
+        stats_text = (
+            f"Packing Density: {analytics_summary.get('packing_density', 0.0):.2f}\n"
+            f"Average Cycle Time: {analytics_summary.get('average_cycle_time', 0.0):.1f}\n"
+            f"Fleet Utilization: {analytics_summary.get('fleet_utilization', 0.0):.2f}\n"
+            f"Total Dumps: {analytics_summary.get('total_dumps', 0)}"
+        )
+        axis.text(
+            0.02, 0.98,
+            stats_text,
+            transform=axis.transAxes,
+            fontsize=10,
+            verticalalignment="top",
+            bbox=dict(boxstyle="round", facecolor="white", alpha=0.8)
+        )
 
     plt.tight_layout()
     if block:

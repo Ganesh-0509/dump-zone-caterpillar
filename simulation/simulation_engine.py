@@ -10,9 +10,12 @@ from shapely.geometry import Polygon
 from simulation.truck_agent import Truck, TruckState
 from simulation.truck_generator import TruckGenerator, TruckGeneratorConfig
 from planning.dump_spot_selector import select_dump_spot
-from mapping.occupancy_grid import GridMetadata, CELL_DUMP_PILE, grid_to_world
+from mapping.occupancy_grid import GridMetadata, CELL_DUMP_PILE, grid_to_world, world_to_grid
 from mapping.terrain_map import add_dump
 from planning.traffic_manager import TrafficManager
+from planning.spatial_index import SpatialIndex
+from planning.fleet_manager import FleetManager
+from planning.analytics_manager import AnalyticsManager
 
 
 @dataclass
@@ -42,9 +45,16 @@ class SimulationEngine:
         self.occupancy_grid = occupancy_grid
         self.height_map = height_map
         self.metadata = metadata
-        self.generator = TruckGenerator(zones, config.generator_config)
+        
+        self.fleet_manager = FleetManager()
+        for i, zone in enumerate(zones):
+            self.fleet_manager.register_zone(i, zone)
+            
+        self.generator = TruckGenerator(zones, config.generator_config, self.fleet_manager)
         self.trucks: list[Truck] = []
         self.traffic_manager = TrafficManager()
+        self.spatial_index = SpatialIndex()
+        self.analytics = AnalyticsManager()
         self.current_step = 0
         self.history: list[dict] = []
 
@@ -95,9 +105,28 @@ class SimulationEngine:
                 )
 
             self.trucks.append(new_truck)
+            self.analytics.record_truck_spawn(new_truck.truck_id, self.current_step)
+
+            # Add to spatial index
+            start_cell = world_to_grid(
+                new_truck.position_x,
+                new_truck.position_y,
+                self.metadata.origin_x,
+                self.metadata.origin_y,
+                self.metadata.cell_size,
+            )
+            self.spatial_index.add_truck(new_truck.truck_id, start_cell)
 
         # Update all trucks
         for truck in self.trucks:
+            old_cell = world_to_grid(
+                truck.position_x,
+                truck.position_y,
+                self.metadata.origin_x,
+                self.metadata.origin_y,
+                self.metadata.cell_size,
+            )
+
             if truck.state == TruckState.MOVING_TO_ZONE:
                 # Update path if blocked
                 if truck.path and truck.current_path_index < len(truck.path):
@@ -131,6 +160,16 @@ class SimulationEngine:
                         )
                     except IndexError:
                         pass
+                        
+                zone_id = -1
+                for i, zone in enumerate(self.zones):
+                    if zone == truck.assigned_zone:
+                        zone_id = i
+                        break
+                if zone_id != -1:
+                    self.fleet_manager.update_zone_utilization(zone_id, self.occupancy_grid, self.metadata)
+                    self.fleet_manager.remove_truck_from_zone(zone_id)
+                    self.analytics.record_dump(truck.truck_id, zone_id, truck.payload, self.current_step)
 
                 truck.payload = 0.0
                 truck.state = TruckState.RETURNING
@@ -168,6 +207,16 @@ class SimulationEngine:
                 if target_reached:
                     truck.state = TruckState.IDLE
                     self.traffic_manager.release_reservations(truck.truck_id)
+                    self.analytics.record_truck_return(truck.truck_id, self.current_step)
+
+            new_cell = world_to_grid(
+                truck.position_x,
+                truck.position_y,
+                self.metadata.origin_x,
+                self.metadata.origin_y,
+                self.metadata.cell_size,
+            )
+            self.spatial_index.update_truck(truck.truck_id, old_cell, new_cell)
 
         # Record state snapshot for visualization
         snapshot = {
@@ -177,6 +226,14 @@ class SimulationEngine:
             "truck_states": [t.state.value for t in self.trucks],
         }
         self.history.append(snapshot)
+        
+        self.analytics.update_metrics(
+            self.occupancy_grid,
+            self.zones,
+            self.trucks,
+            self.metadata,
+            self.current_step
+        )
 
         self.current_step += 1
 
@@ -205,10 +262,19 @@ class SimulationEngine:
                     self.occupancy_grid,
                     self.metadata,
                     self.trucks,
+                    height_map=self.height_map,
                     step=self.current_step,
                     block=False,
+                    analytics_summary=self.analytics.get_summary()
                 )
                 plt.pause(0.1)
+
+        print("\nSimulation Results")
+        summary = self.analytics.get_summary()
+        print(f"Packing Density: {summary['packing_density']:.2f}")
+        print(f"Average Cycle Time: {summary['average_cycle_time']:.1f} steps")
+        print(f"Fleet Utilization: {summary['fleet_utilization']:.2f}")
+        print(f"Dump Throughput: {summary['dump_throughput']:.2f} dumps/step")
 
     def get_current_trucks(self) -> list[Truck]:
         """Get all active trucks at current step."""
@@ -229,6 +295,33 @@ class SimulationEngine:
     def get_idle_trucks(self) -> list[Truck]:
         """Get idle trucks."""
         return [t for t in self.trucks if t.state == TruckState.IDLE]
+
+    def check_collisions(self, collision_distance: float = 2.0) -> list[tuple[int, int]]:
+        """Check for collisions querying nearby trucks via the spatial index."""
+        collisions = set()
+        truck_dict = {t.truck_id: t for t in self.trucks}
+        
+        for truck in self.trucks:
+            cell = world_to_grid(
+                truck.position_x,
+                truck.position_y,
+                self.metadata.origin_x,
+                self.metadata.origin_y,
+                self.metadata.cell_size,
+            )
+            nearby_ids = self.spatial_index.get_nearby_trucks(cell)
+            for other_id in nearby_ids:
+                if other_id > truck.truck_id:
+                    other_truck = truck_dict.get(other_id)
+                    if other_truck:
+                        dist = np.hypot(
+                            truck.position_x - other_truck.position_x,
+                            truck.position_y - other_truck.position_y
+                        )
+                        if dist < collision_distance:
+                            collisions.add((truck.truck_id, other_id))
+                            
+        return list(collisions)
 
     def get_statistics(self) -> dict:
         """Get simulation statistics."""

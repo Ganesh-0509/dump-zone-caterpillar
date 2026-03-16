@@ -11,6 +11,7 @@ from shapely.geometry import Polygon
 
 from mapping.occupancy_grid import world_to_grid, grid_to_world, GridMetadata
 from planning.path_planner import plan_path
+from planning.path_smoother import PathSmoother
 
 class TruckState(Enum):
     """Enumeration of truck states."""
@@ -40,8 +41,9 @@ class Truck:
     
     # Path following attributes
     path: list[tuple[int, int]] = field(default_factory=list, init=False)
-    current_path_index: int = field(default=0, init=False)
-
+    current_path_index: int = field(default=0, init=False)    
+    smoothed_path: list[tuple[float, float]] = field(default_factory=list, init=False)
+    current_smoothed_index: int = field(default=0, init=False)
     def compute_path(
         self,
         occupancy_grid: np.ndarray,
@@ -91,6 +93,12 @@ class Truck:
             self.current_path_index = 0
             if traffic_manager:
                 traffic_manager.reserve_path(self.truck_id, self.path, current_step)
+                
+            smoother = PathSmoother()
+            reduced = smoother.reduce_waypoints(self.path)
+            self.smoothed_path = smoother.smooth_path(reduced, resolution=5, metadata=metadata)
+            self.current_smoothed_index = 0
+            
             return True
             
         return False
