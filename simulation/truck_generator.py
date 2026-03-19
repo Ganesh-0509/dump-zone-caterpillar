@@ -38,6 +38,13 @@ class TruckGenerator:
         self.next_release_step = 0
         self.queued_loads = 0
         self.zone_dump_counts = [0] * len(zones)
+        self.zone_priority_order = list(range(len(zones)))  # Will be set by engine
+        self.current_priority_index = 0
+
+    def set_zone_priority(self, priority_order: list[int]):
+        """Set the zone priority order (farthest first)."""
+        self.zone_priority_order = priority_order
+        self.current_priority_index = 0
 
     def update_loading_queue(self, current_step: int) -> None:
         """Add incoming loads to queue at spawn interval cadence."""
@@ -68,7 +75,7 @@ class TruckGenerator:
         return True
 
     def spawn_truck(self, current_step: int = 0) -> Truck:
-        """Create a new truck with assigned zone."""
+        """Create a new truck with assigned zone (farthest-first)."""
         truck_id = self.truck_counter
         self.truck_counter += 1
 
@@ -76,8 +83,9 @@ class TruckGenerator:
             self.queued_loads -= 1
         self.next_release_step = current_step + self.config.release_interval
 
-        # Pick zone with fewest assignments to enforce strict spread.
-        zone_index = self.zone_dump_counts.index(min(self.zone_dump_counts))
+        # Use farthest-first zone priority (not least-congested)
+        zone_index = self.zone_priority_order[self.current_priority_index % len(self.zone_priority_order)]
+        self.current_priority_index += 1
         self.zone_dump_counts[zone_index] += 1
 
         assigned_zone = self.zones[zone_index]

@@ -68,6 +68,8 @@ class ZoneGridManager:
                         cell = ZoneGridCell(col, row, cell_x, cell_y, self.GRID_CELL_SIZE)
                         cells[(col, row)] = cell
             
+            print(f"[GRID] Zone {zone_id}: {len(cells)} cells created (grid {grid_cols}x{grid_rows}, bounds {min_x:.1f}-{max_x:.1f}, {min_y:.1f}-{max_y:.1f})")
+            
             self.zone_grids[zone_id] = {
                 'zone': zone,
                 'bounds': zone.bounds,

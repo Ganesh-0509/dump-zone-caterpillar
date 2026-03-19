@@ -106,9 +106,15 @@ class SimulationEngine:
 
         # Keep operational waypoints routable; fallback to a known inside point if needed.
         if not yard_polygon.contains(Point(*self.approach_lane_point)):
+            print(f"[WAYPOINT] Approach lane {self.approach_lane_point} outside polygon, adjusting to {inside_hint.x:.1f}, {inside_hint.y:.1f}")
             self.approach_lane_point = (inside_hint.x, inside_hint.y)
         if not yard_polygon.contains(Point(*self.return_lane_point)):
+            print(f"[WAYPOINT] Return lane {self.return_lane_point} outside polygon, adjusting to {inside_hint.x:.1f}, {inside_hint.y:.1f}")
             self.return_lane_point = (inside_hint.x, inside_hint.y)
+        
+        print(f"[WAYPOINT] Approach lane: {self.approach_lane_point[0]:.1f}, {self.approach_lane_point[1]:.1f}")
+        print(f"[WAYPOINT] Return lane: {self.return_lane_point[0]:.1f}, {self.return_lane_point[1]:.1f}")
+        print(f"[WAYPOINT] Exit point: {self.exit_point[0]:.1f}, {self.exit_point[1]:.1f}")
 
         safe_holding_points: list[tuple[float, float]] = []
         for hx, hy in self.holding_points:
@@ -123,6 +129,16 @@ class SimulationEngine:
             config.generator_config.entrance_x,
             config.generator_config.entrance_y
         )
+        
+        # Set zone priority on truck generator (farthest-first)
+        zone_priority = self.zone_grid_manager.get_zone_priority_order()
+        self.generator.set_zone_priority(zone_priority)
+        
+        # DEBUG: Log grid initialization
+        print(f"[INIT] Zones: {len(self.zones)}, Grid cell size: 3.0m")
+        for zone_id in range(len(self.zones)):
+            cell_count = len(self.zone_grid_manager.zone_grids[zone_id]['cells'])
+            print(f"  Zone {zone_id}: {cell_count} grid cells | Priority order: {zone_priority}")
 
     def _is_entry_congested(self, threshold_distance: float = 5.0, max_nearby: int = 5) -> bool:
         """Return True when too many trucks are clustered near entrance."""
@@ -312,9 +328,10 @@ class SimulationEngine:
                     if truck.approach_stage == 0:
                         # After approach lane, use grid-based dump spot from zone
                         truck.approach_stage = 1
+                        zone_id = self._zone_index_for_truck(truck)
+                        print(f"[APPROACH] Truck {truck.truck_id} reached approach lane, assigning zone {zone_id}")
                         try:
                             # Use grid cell location from zone
-                            zone_id = self._zone_index_for_truck(truck)
                             dump_location = self.zone_grid_manager.get_next_dump_location(zone_id)
                             
                             if dump_location:
@@ -328,10 +345,13 @@ class SimulationEngine:
                                     self.metadata.cell_size,
                                 )
                                 truck.set_dump_location(dump_grid_x, dump_grid_y)
+                                # DEBUG
+                                print(f"[GRID] Truck {truck.truck_id} -> Zone {zone_id} grid cell ({dump_grid_x}, {dump_grid_y})")
                             else:
                                 raise ValueError("No empty grid cells in zone")
-                        except ValueError:
+                        except ValueError as e:
                             # Fallback to zone centroid grid cell.
+                            print(f"[FALLBACK] Truck {truck.truck_id} grid failed ({e}), using centroid")
                             cx, cy = truck.assigned_zone.centroid.x, truck.assigned_zone.centroid.y
                             gx, gy = world_to_grid(
                                 cx,
@@ -484,6 +504,7 @@ class SimulationEngine:
                         self.traffic_manager,
                         self.current_step
                     )
+                    print(f"[RETURN] Truck {truck.truck_id} stage 0 -> return lane ({self.return_lane_point[0]:.1f}, {self.return_lane_point[1]:.1f})")
 
             elif truck.state == TruckState.RETURNING:
                 # If path is missing, retry planning to current target.
@@ -520,6 +541,7 @@ class SimulationEngine:
                 if target_reached:
                     if truck.return_stage == 0:
                         truck.return_stage = 1
+                        print(f"[RETURN] Truck {truck.truck_id} reached return lane, moving to exit ({self.exit_point[0]:.1f}, {self.exit_point[1]:.1f})")
                         truck.set_target(
                             self.exit_point[0],
                             self.exit_point[1],
@@ -533,6 +555,7 @@ class SimulationEngine:
                             self.current_step
                         )
                     else:
+                        print(f"[RETURN] Truck {truck.truck_id} reached exit point, going IDLE")
                         truck.state = TruckState.IDLE
                         truck.has_dump_spot = False
                         truck.waiting_for_dump_slot = False
