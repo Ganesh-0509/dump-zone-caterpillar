@@ -16,7 +16,7 @@
             background: linear-gradient(135deg, #1e3c72 0%, #2a5298 100%);
             color: #fff;
             height: 100vh;
-            overflow: hidden;
+            overflow: auto;
         }
 
         .container {
@@ -102,7 +102,7 @@
         .sidebar {
             display: flex;
             flex-direction: column;
-            gap: 10px;
+            gap: 20px;
         }
 
         .panel {
@@ -226,6 +226,47 @@
             margin-top: 4px;
         }
 
+        .spacing-stack {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            margin-bottom: 10px;
+            padding: 10px;
+            background: rgba(255, 255, 255, 0.04);
+            border-radius: 6px;
+        }
+
+        .spacing-row {
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+        }
+
+        .spacing-value-good {
+            color: #4caf50;
+            font-weight: 700;
+        }
+
+        .spacing-value-amber {
+            color: #ffc107;
+            font-weight: 700;
+        }
+
+        .spacing-value-bad {
+            color: #f44336;
+            font-weight: 700;
+        }
+
+        .static-good {
+            color: #4caf50;
+            font-weight: 600;
+        }
+
+        .static-bad {
+            color: #f44336;
+            font-weight: 600;
+        }
+
         @media (max-width: 1024px) {
             .container {
                 grid-template-columns: 1fr;
@@ -293,6 +334,9 @@
                 <button id="play-btn">▶ Play</button>
                 <button id="pause-btn">⏸ Pause</button>
                 <button id="step-btn">⏭ Step</button>
+                <button id="draw-yard-btn">Draw Yard</button>
+                <button id="finish-polygon-btn">Finish Polygon</button>
+                <button id="move-entry-btn">Move Entry Point</button>
                 <button id="reset-btn" class="danger">↻ Reset</button>
             </div>
         </div>
@@ -328,6 +372,23 @@
                     <span>Avg Pile Slope:</span>
                     <span class="metric-value" id="metric-slope">0.0°</span>
                 </div>
+                <div class="metric" style="border-bottom: none; margin-bottom: 4px;">
+                    <span>Dump Spacing:</span>
+                </div>
+                <div class="spacing-stack">
+                    <div class="spacing-row">
+                        <span>Your system:</span>
+                        <span id="metric-spacing-your" class="spacing-value-amber">0.00 m</span>
+                    </div>
+                    <div class="spacing-row">
+                        <span>Staffed ops:</span>
+                        <span class="static-good">3.03 m</span>
+                    </div>
+                    <div class="spacing-row">
+                        <span>Old auto:</span>
+                        <span class="static-bad">7.38 m</span>
+                    </div>
+                </div>
             </div>
 
             <div class="panel">
@@ -354,6 +415,9 @@
                 </div>
                 <div class="info-box">
                     Click "Initialize" to start, then "Play" to run the simulation.
+                </div>
+                <div class="info-box" id="drawing-status">
+                    Draw Yard to sketch a polygon, then set an entry point.
                 </div>
             </div>
 
@@ -388,42 +452,180 @@
     <script>
         const canvas = document.getElementById('canvas');
         const ctx = canvas.getContext('2d');
-        
+        // Extended color palette for up to 15 zones
+        const ZONE_COLORS = [
+            '#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7',
+            '#DDA15E', '#BC6C25', '#8E44AD', '#3498DB', '#E74C3C',
+            '#27AE60', '#F39C12', '#2E86AB', '#A23B72', '#F18F01'
+        ];
+
+        let simInterval = null;
+        let stepInFlight = false;
+
         let simulationState = {
-            isRunning: false,
             metadata: null,
             state: null,
-            animationId: null,
+            drawMode: false,
+            polygonFinished: false,
+            awaitingEntryPoint: false,
+            moveEntryMode: false,
+            drawnPolygonPoints: [],
+            entryPoint: null,
+            viewTransform: null,
+            zoneVisuals: [],
+            zoneCount: 5,
         };
 
-        // Responsive canvas
+        function setDrawingStatus(message) {
+            document.getElementById('drawing-status').textContent = message;
+        }
+
+        function getActivePolygonPoints() {
+            if (simulationState.drawnPolygonPoints.length > 0) {
+                return simulationState.drawnPolygonPoints;
+            }
+
+            if (simulationState.metadata && simulationState.metadata.bounds) {
+                const b = simulationState.metadata.bounds;
+                return [
+                    [b.min_x, b.min_y],
+                    [b.max_x, b.min_y],
+                    [b.max_x, b.max_y],
+                    [b.min_x, b.max_y],
+                ];
+            }
+
+            return [];
+        }
+
+        function rebuildZoneVisuals() {
+            const points = getActivePolygonPoints();
+            simulationState.zoneVisuals = [];
+            if (points.length < 3) {
+                return;
+            }
+
+            const xs = points.map(p => p[0]);
+            const ys = points.map(p => p[1]);
+            const minX = Math.min.apply(null, xs);
+            const maxX = Math.max.apply(null, xs);
+            const minY = Math.min.apply(null, ys);
+            const maxY = Math.max.apply(null, ys);
+            const width = Math.max(maxX - minX, 1e-9);
+
+            // Use dynamic zone count from metadata, default to 5
+            const zoneCount = simulationState.metadata ? simulationState.metadata.zones : 5;
+            simulationState.zoneCount = zoneCount;
+
+            for (let i = 0; i < zoneCount; i++) {
+                const x0 = minX + (i / zoneCount) * width;
+                const x1 = minX + ((i + 1) / zoneCount) * width;
+                simulationState.zoneVisuals.push({
+                    label: 'Zone ' + (i + 1),
+                    color: ZONE_COLORS[i % ZONE_COLORS.length],
+                    divider_x: x1,
+                    min_y: minY,
+                    max_y: maxY,
+                    center: [(x0 + x1) / 2, (minY + maxY) / 2],
+                });
+            }
+        }
+
+        function stopSimulationLoop() {
+            if (simInterval) {
+                clearInterval(simInterval);
+                simInterval = null;
+            }
+        }
+
+        function getSpeedDelayMs() {
+            const speed = parseInt(document.getElementById('speed-slider').value, 10);
+            return Math.max(20, Math.floor(1000 / Math.max(speed, 1)));
+        }
+
+        function startSimulationLoop() {
+            if (simInterval) {
+                return;
+            }
+
+            const delay = getSpeedDelayMs();
+            simInterval = setInterval(async () => {
+                if (stepInFlight) {
+                    return;
+                }
+                stepInFlight = true;
+                try {
+                    await stepSimulation();
+                } finally {
+                    stepInFlight = false;
+                }
+            }, delay);
+        }
+
+        function resetCanvasStateForDrawing() {
+            stopSimulationLoop();
+            simulationState.state = null;
+            simulationState.metadata = null;
+            simulationState.entryPoint = null;
+            simulationState.awaitingEntryPoint = false;
+            simulationState.moveEntryMode = false;
+            simulationState.polygonFinished = false;
+            simulationState.drawnPolygonPoints = [];
+            simulationState.zoneVisuals = [];
+            document.getElementById('step-count').textContent = '0';
+            document.getElementById('truck-count').textContent = '0';
+            document.getElementById('zone-count').textContent = '0';
+            updateTruckList([]);
+            updateMetrics({
+                packing_density: 0,
+                fleet_utilization: 0,
+                total_dumps: 0,
+                layer_growth_events: 0,
+                max_pile_height: 0,
+                average_pile_slope: 0,
+                avg_spacing: 0,
+            });
+        }
+
+        // ISSUE 4 CHANGE: responsive canvas dimensions tied to window with sidebar/header room.
         function resizeCanvas() {
-            const rect = canvas.parentElement.getBoundingClientRect();
-            canvas.width = rect.width;
-            canvas.height = rect.height;
+            canvas.width = Math.max(480, window.innerWidth - 320);
+            canvas.height = Math.max(300, window.innerHeight - 80);
+            draw();
         }
 
         window.addEventListener('resize', resizeCanvas);
         resizeCanvas();
 
-        // API Calls
         async function initializeSimulation() {
             try {
                 const response = await fetch('/api/init', { method: 'POST' });
                 const result = await response.json();
-                
+
                 if (result.status === 'success') {
                     const meta = await fetch('/api/metadata').then(r => r.json());
-                    simulationState.metadata = meta;
-                    document.getElementById('zone-count').textContent = meta.zones;
-                    
+                    if (meta.status === 'success') {
+                        simulationState.metadata = meta;
+                        document.getElementById('zone-count').textContent = meta.zones;
+                        if (simulationState.drawnPolygonPoints.length < 3) {
+                            simulationState.drawnPolygonPoints = getActivePolygonPoints();
+                            simulationState.polygonFinished = true;
+                        }
+                        rebuildZoneVisuals();
+                        updateViewTransform();  // Update after loading metadata
+                    }
+
                     await updateState();
+                    setDrawingStatus('Simulation initialized.');
                     draw();
                     return true;
                 }
+
+                setDrawingStatus('Initialization failed.');
                 return false;
             } catch (error) {
                 console.error('Init error:', error);
+                setDrawingStatus('Initialization request failed.');
                 return false;
             }
         }
@@ -432,13 +634,14 @@
             try {
                 const response = await fetch('/api/state');
                 const result = await response.json();
-                
+
                 if (result.status === 'success') {
                     simulationState.state = result;
                     updateMetrics(result.metrics);
                     updateTruckList(result.trucks);
                     document.getElementById('step-count').textContent = result.step;
                     document.getElementById('truck-count').textContent = result.active_trucks;
+                    updateViewTransform();  // Ensure transform is set up
                 }
             } catch (error) {
                 console.error('State error:', error);
@@ -447,8 +650,16 @@
 
         async function stepSimulation() {
             try {
-                await fetch('/api/step', { method: 'POST' });
-                await updateState();
+                const response = await fetch('/api/step', { method: 'POST' });
+                const result = await response.json();
+
+                if (result.status === 'success') {
+                    simulationState.state = result;
+                    updateMetrics(result.metrics);
+                    updateTruckList(result.trucks);
+                    document.getElementById('step-count').textContent = result.step;
+                    document.getElementById('truck-count').textContent = result.active_trucks;
+                }
                 draw();
             } catch (error) {
                 console.error('Step error:', error);
@@ -456,24 +667,129 @@
         }
 
         async function resetSimulation() {
-            simulationState.isRunning = false;
+            stopSimulationLoop();
+
+            // Ensure reset exits any in-progress drawing/entry edit modes.
+            simulationState.drawMode = false;
+            simulationState.awaitingEntryPoint = false;
+            simulationState.moveEntryMode = false;
+
             await fetch('/api/reset', { method: 'POST' });
             await initializeSimulation();
+            setDrawingStatus('Simulation reset.');
+            draw();
+        }
+
+        async function submitPolygon(points) {
+            try {
+                const normalizedPoints = normalizePointsToWorldSpace(points);
+                const response = await fetch('/api/set_polygon', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ points: normalizedPoints }),
+                });
+                const result = await response.json();
+                if (result.status !== 'success') {
+                    setDrawingStatus('Polygon error: ' + (result.message || 'Failed to set polygon'));
+                    return false;
+                }
+
+                // Keep polygon points in normalized world space after successful submit.
+                simulationState.drawnPolygonPoints = normalizedPoints;
+
+                const meta = await fetch('/api/metadata').then(r => r.json());
+                if (meta.status === 'success') {
+                    simulationState.metadata = meta;
+                    document.getElementById('zone-count').textContent = meta.zones;
+                    rebuildZoneVisuals();
+                    updateViewTransform();  // Update view transform with new metadata
+                }
+
+                await updateState();
+                return true;
+            } catch (error) {
+                console.error('Set polygon error:', error);
+                setDrawingStatus('Polygon error: request failed');
+                return false;
+            }
+        }
+
+        function normalizePointsToWorldSpace(pixelPoints) {
+            const xs = pixelPoints.map(p => p[0]);
+            const ys = pixelPoints.map(p => p[1]);
+            const minX = Math.min.apply(null, xs);
+            const minY = Math.min.apply(null, ys);
+            const maxX = Math.max.apply(null, xs);
+            const maxY = Math.max.apply(null, ys);
+            const rangeX = Math.max(maxX - minX, 1);
+            const rangeY = Math.max(maxY - minY, 1);
+            const scale = 100 / Math.max(rangeX, rangeY);
+
+            return pixelPoints.map(p => [
+                (p[0] - minX) * scale,
+                (p[1] - minY) * scale,
+            ]);
+        }
+
+        function sortPointsClockwise(points) {
+            if (points.length < 3) {
+                return points;
+            }
+
+            const cx = points.reduce((sum, p) => sum + p[0], 0) / points.length;
+            const cy = points.reduce((sum, p) => sum + p[1], 0) / points.length;
+
+            return points.slice().sort((a, b) => {
+                const angleA = Math.atan2(a[1] - cy, a[0] - cx);
+                const angleB = Math.atan2(b[1] - cy, b[0] - cx);
+                return angleA - angleB;
+            });
+        }
+
+        async function submitEntryPoint(x, y) {
+            try {
+                const response = await fetch('/api/set_entry', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ x, y }),
+                });
+                const result = await response.json();
+                if (result.status !== 'success') {
+                    setDrawingStatus('Entry error: ' + (result.message || 'Failed to set entry point'));
+                    return false;
+                }
+                return true;
+            } catch (error) {
+                console.error('Set entry error:', error);
+                setDrawingStatus('Entry error: request failed');
+                return false;
+            }
         }
 
         function updateMetrics(metrics) {
-            document.getElementById('metric-packing').textContent = 
+            document.getElementById('metric-packing').textContent =
                 (metrics.packing_density * 100).toFixed(2) + '%';
-            document.getElementById('metric-fleet').textContent = 
+            document.getElementById('metric-fleet').textContent =
                 (metrics.fleet_utilization * 100).toFixed(1) + '%';
-            document.getElementById('metric-dumps').textContent = 
+            document.getElementById('metric-dumps').textContent =
                 metrics.total_dumps;
-            document.getElementById('metric-layers').textContent = 
+            document.getElementById('metric-layers').textContent =
                 metrics.layer_growth_events;
-            document.getElementById('metric-height').textContent = 
+            document.getElementById('metric-height').textContent =
                 metrics.max_pile_height.toFixed(1) + 'm';
-            document.getElementById('metric-slope').textContent = 
+            document.getElementById('metric-slope').textContent =
                 (metrics.average_pile_slope * 57.2958).toFixed(1) + '°';
+
+            const spacing = Number(metrics.avg_spacing || 0);
+            const spacingEl = document.getElementById('metric-spacing-your');
+            spacingEl.textContent = spacing.toFixed(2) + ' m';
+            if (spacing < 4) {
+                spacingEl.className = 'spacing-value-good';
+            } else if (spacing <= 6) {
+                spacingEl.className = 'spacing-value-amber';
+            } else {
+                spacingEl.className = 'spacing-value-bad';
+            }
         }
 
         function updateTruckList(trucks) {
@@ -483,168 +799,537 @@
                 return;
             }
 
-            list.innerHTML = trucks.slice(0, 10).map(truck => `
-                <div class="truck-item">
-                    <strong>Truck ${truck.id}</strong>
-                    <div class="truck-state">${truck.state}</div>
-                    <div style="margin-top: 2px; font-size: 10px;">
-                        Payload: ${truck.payload.toFixed(1)}t
-                    </div>
-                </div>
-            `).join('');
+            list.innerHTML = trucks.slice(0, 10).map(truck => {
+                return '<div class="truck-item">'
+                    + '<strong>Truck ' + truck.id + '</strong>'
+                    + '<div class="truck-state">' + truck.state + '</div>'
+                    + '<div style="margin-top: 2px; font-size: 10px;">'
+                    + 'Payload: ' + truck.payload.toFixed(1) + 't'
+                    + '</div>'
+                    + '</div>';
+            }).join('');
         }
 
-        function draw() {
-            if (!simulationState.state || !simulationState.metadata) {
-                ctx.fillStyle = 'rgba(0, 0, 0, 0.2)';
-                ctx.fillRect(0, 0, canvas.width, canvas.height);
-                ctx.fillStyle = '#fff';
-                ctx.font = '16px Arial';
-                ctx.textAlign = 'center';
-                ctx.fillText('Click Initialize to start', canvas.width / 2, canvas.height / 2);
+        function isPointInPolygon(point, polygonPoints) {
+            let inside = false;
+            const x = point[0];
+            const y = point[1];
+            for (let i = 0, j = polygonPoints.length - 1; i < polygonPoints.length; j = i++) {
+                const xi = polygonPoints[i][0];
+                const yi = polygonPoints[i][1];
+                const xj = polygonPoints[j][0];
+                const yj = polygonPoints[j][1];
+                const intersect = ((yi > y) !== (yj > y)) &&
+                    (x < (xj - xi) * (y - yi) / ((yj - yi) || 1e-9) + xi);
+                if (intersect) {
+                    inside = !inside;
+                }
+            }
+            return inside;
+        }
+
+        function updateViewTransform() {
+            // Use metadata bounds if available (actual world coordinates)
+            // This ensures truck positions align correctly
+            if (simulationState.metadata && simulationState.metadata.bounds && !simulationState.drawMode) {
+                const b = simulationState.metadata.bounds;
+                const widthRange = Math.max(b.max_x - b.min_x, 1e-9);
+                const heightRange = Math.max(b.max_y - b.min_y, 1e-9);
+                const scaleX = canvas.width / widthRange;
+                const scaleY = canvas.height / heightRange;
+                const scale = Math.min(scaleX, scaleY) * 0.95;
+                const offsetX = (canvas.width - widthRange * scale) / 2;
+                const offsetY = (canvas.height - heightRange * scale) / 2;
+                
+                // DEBUG: Log transformation details
+                if (!window.transformLogged) {
+                    console.log('=== VIEWPORT TRANSFORM DEBUG ===');
+                    console.log('Canvas:', canvas.width, 'x', canvas.height);
+                    console.log('Bounds:', b.min_x, b.min_y, 'to', b.max_x, b.max_y);
+                    console.log('Width/Height range:', widthRange, heightRange);
+                    console.log('Scales (X/Y):', scaleX, scaleY);
+                    console.log('Final scale:', scale);
+                    console.log('Offsets (X/Y):', offsetX, offsetY);
+                    console.log('Test point (60.25, 31.75) -> screen:', [
+                        offsetX + (60.25 - b.min_x) * scale,
+                        offsetY + (31.75 - b.min_y) * scale
+                    ]);
+                    window.transformLogged = true;
+                }
+                
+                simulationState.viewTransform = { 
+                    bounds: b, 
+                    scale, 
+                    offsetX, 
+                    offsetY 
+                };
                 return;
             }
 
-            const meta = simulationState.metadata;
-            const state = simulationState.state;
-            
-            // Background
-            ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-            // Calculate scaling
-            const bounds = meta.bounds;
-            const scaleX = canvas.width / (bounds.max_x - bounds.min_x);
-            const scaleY = canvas.height / (bounds.max_y - bounds.min_y);
-            const scale = Math.min(scaleX, scaleY) * 0.95;
-
-            const offsetX = (canvas.width - (bounds.max_x - bounds.min_x) * scale) / 2;
-            const offsetY = (canvas.height - (bounds.max_y - bounds.min_y) * scale) / 2;
-
-            function toScreen(x, y) {
-                return [
-                    offsetX + (x - bounds.min_x) * scale,
-                    offsetY + (y - bounds.min_y) * scale,
-                ];
+            // While drawing, points are raw screen pixels; do not build world transform yet.
+            if (simulationState.drawMode) {
+                simulationState.viewTransform = null;
+                return;
             }
 
-            // Draw dump piles with better visibility
-            state.dump_cells.forEach(cell => {
-                const [sx, sy] = toScreen(cell.x, cell.y);
-                const size = Math.max(6, Math.min(20, cell.height * 3 + 6));
-                
-                // Draw shadow
-                ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
-                ctx.fillRect(sx - size/2 + 2, sy - size/2 + 2, size, size);
-                
-                // Draw pile
-                ctx.fillStyle = '#8b6914';
-                ctx.fillRect(sx - size/2, sy - size/2, size, size);
-                
-                // Draw height indicator
-                ctx.strokeStyle = '#d4af37';
-                ctx.lineWidth = 2;
-                ctx.strokeRect(sx - size/2, sy - size/2, size, size);
+            const points = getActivePolygonPoints();
+            if (points.length < 3) {
+                simulationState.viewTransform = null;
+                return;
+            }
+
+            const xs = points.map(p => p[0]);
+            const ys = points.map(p => p[1]);
+            const bounds = {
+                min_x: Math.min.apply(null, xs),
+                min_y: Math.min.apply(null, ys),
+                max_x: Math.max.apply(null, xs),
+                max_y: Math.max.apply(null, ys),
+            };
+
+            const widthRange = Math.max(bounds.max_x - bounds.min_x, 1e-9);
+            const heightRange = Math.max(bounds.max_y - bounds.min_y, 1e-9);
+            const scaleX = canvas.width / widthRange;
+            const scaleY = canvas.height / heightRange;
+            const scale = Math.min(scaleX, scaleY) * 0.95;
+            const offsetX = (canvas.width - widthRange * scale) / 2;
+            const offsetY = (canvas.height - heightRange * scale) / 2;
+            simulationState.viewTransform = { bounds, scale, offsetX, offsetY };
+        }
+
+        function toScreen(x, y) {
+            if (!simulationState.viewTransform) {
+                return [x, y];
+            }
+            const t = simulationState.viewTransform;
+            const screenPos = [
+                t.offsetX + (x - t.bounds.min_x) * t.scale,
+                t.offsetY + (y - t.bounds.min_y) * t.scale,
+            ];
+            
+            // DEBUG: Log once for first truck position
+            if (!window.toScreenLogged && x > 50 && x < 70) {
+                console.log(`toScreen(${x}, ${y}) ->`, screenPos);
+                console.log('Transform state:', t);
+                window.toScreenLogged = true;
+            }
+            
+            return screenPos;
+        }
+
+        function toWorld(screenX, screenY) {
+            if (!simulationState.viewTransform) {
+                return [screenX, screenY];
+            }
+            const t = simulationState.viewTransform;
+            return [
+                (screenX - t.offsetX) / t.scale + t.bounds.min_x,
+                (screenY - t.offsetY) / t.scale + t.bounds.min_y,
+            ];
+        }
+
+        function drawPolygonLayer() {
+            const points = getActivePolygonPoints();
+            if (points.length < 1) {
+                return;
+            }
+
+            // During live drawing, always use raw screen coordinates.
+            const useRaw = simulationState.drawMode;
+
+            ctx.beginPath();
+            points.forEach((pt, idx) => {
+                const s = useRaw ? pt : toScreen(pt[0], pt[1]);
+                if (idx === 0) {
+                    ctx.moveTo(s[0], s[1]);
+                } else {
+                    ctx.lineTo(s[0], s[1]);
+                }
             });
 
-            // Draw trucks with better visibility
+            // While drawing, show click-order outline only (no fill) and preview close segment.
+            if (useRaw) {
+                ctx.strokeStyle = '#ffeb3b';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+
+                if (points.length >= 2) {
+                    const first = points[0];
+                    const last = points[points.length - 1];
+                    ctx.setLineDash([5, 5]);
+                    ctx.strokeStyle = 'rgba(255, 235, 59, 0.4)';
+                    ctx.beginPath();
+                    ctx.moveTo(last[0], last[1]);
+                    ctx.lineTo(first[0], first[1]);
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+                }
+            } else if (points.length >= 3) {
+                ctx.closePath();
+                // ISSUE 1 CHANGE: dark green polygon fill.
+                ctx.fillStyle = 'rgba(0,80,0,0.4)';
+                ctx.fill();
+
+                // ISSUE 1 CHANGE: bright yellow polygon outline.
+                ctx.strokeStyle = '#ffeb3b';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+            } else {
+                ctx.strokeStyle = '#ffeb3b';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+            }
+
+            if (simulationState.drawMode) {
+                points.forEach(pt => {
+                    const s = useRaw ? pt : toScreen(pt[0], pt[1]);
+                    ctx.fillStyle = '#ffd54f';
+                    ctx.beginPath();
+                    ctx.arc(s[0], s[1], 5, 0, Math.PI * 2);
+                    ctx.fill();
+                });
+            }
+        }
+
+        function drawZoneLayer() {
+            const polygonPoints = getActivePolygonPoints();
+            if (polygonPoints.length < 3) {
+                return;
+            }
+
+            // Clip zone rendering to polygon so zone divisions only appear inside the yard.
+            ctx.save();
+            ctx.beginPath();
+            polygonPoints.forEach((pt, idx) => {
+                const s = toScreen(pt[0], pt[1]);
+                if (idx === 0) {
+                    ctx.moveTo(s[0], s[1]);
+                } else {
+                    ctx.lineTo(s[0], s[1]);
+                }
+            });
+            ctx.closePath();
+            ctx.clip();
+
+            // Draw only inner division lines (no rectangular zone boxes).
+            simulationState.zoneVisuals.forEach((zone, idx) => {
+                if (idx < simulationState.zoneVisuals.length - 1) {
+                    const top = toScreen(zone.divider_x, zone.min_y);
+                    const bottom = toScreen(zone.divider_x, zone.max_y);
+                    ctx.beginPath();
+                    ctx.moveTo(top[0], top[1]);
+                    ctx.lineTo(bottom[0], bottom[1]);
+                    ctx.strokeStyle = zone.color;
+                    ctx.lineWidth = 2;
+                    ctx.stroke();
+                }
+
+                const center = toScreen(zone.center[0], zone.center[1]);
+                ctx.fillStyle = '#ffffff';
+                ctx.font = '12px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText(zone.label, center[0], center[1]);
+            });
+
+            ctx.restore();
+        }
+
+        function drawDumpPilesLayer() {
+            if (!simulationState.state) {
+                return;
+            }
+
+            simulationState.state.dump_cells.forEach(cell => {
+                const s = toScreen(cell.x, cell.y);
+                const size = Math.max(6, Math.min(20, cell.height * 3 + 6));
+
+                ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
+                ctx.fillRect(s[0] - size / 2 + 2, s[1] - size / 2 + 2, size, size);
+
+                ctx.fillStyle = '#8b6914';
+                ctx.fillRect(s[0] - size / 2, s[1] - size / 2, size, size);
+
+                ctx.strokeStyle = '#d4af37';
+                ctx.lineWidth = 2;
+                ctx.strokeRect(s[0] - size / 2, s[1] - size / 2, size, size);
+            });
+        }
+
+        function drawTrucksLayer() {
+            if (!simulationState.state) {
+                return;
+            }
+
+            const state = simulationState.state;
             const trucksByPos = {};
+            
+            // Debug: Log truck positions
+            if (state.trucks.length > 0 && simulationState.debugStep !== state.step) {
+                simulationState.debugStep = state.step;
+                console.log(`Step ${state.step}: ${state.trucks.length} trucks`);
+                console.log(`First truck: x=${state.trucks[0].x.toFixed(1)}, y=${state.trucks[0].y.toFixed(1)}`);
+            }
+            
             state.trucks.forEach(truck => {
                 const key = Math.round(truck.x) + ',' + Math.round(truck.y);
-                if (!trucksByPos[key]) trucksByPos[key] = [];
+                if (!trucksByPos[key]) {
+                    trucksByPos[key] = [];
+                }
                 trucksByPos[key].push(truck);
             });
 
             Object.values(trucksByPos).forEach(trucksAtPos => {
-                if (trucksAtPos.length === 0) return;
-                
-                const truck = trucksAtPos[0];
-                const [sx, sy] = toScreen(truck.x, truck.y);
-                
-                // Color based on state
-                let color = '#4caf50';
-                if (truck.state === 'DUMPING') color = '#ff9800';
-                else if (truck.state === 'RETURNING') color = '#2196f3';
-                else if (truck.state === 'IDLE') color = '#666';
+                if (trucksAtPos.length === 0) {
+                    return;
+                }
 
-                // Draw truck circle (larger)
+                const truck = trucksAtPos[0];
+                const s = toScreen(truck.x, truck.y);
+                let color = '#4caf50';
+                if (truck.state === 'DUMPING') {
+                    color = '#ff9800';
+                } else if (truck.state === 'RETURNING') {
+                    color = '#2196f3';
+                } else if (truck.state === 'IDLE') {
+                    color = '#666';
+                }
+
                 ctx.fillStyle = color;
                 ctx.beginPath();
-                ctx.arc(sx, sy, 8, 0, Math.PI * 2);
+                ctx.arc(s[0], s[1], 8, 0, Math.PI * 2);
                 ctx.fill();
-                
-                // Draw outline
+
                 ctx.strokeStyle = '#fff';
                 ctx.lineWidth = 2;
                 ctx.stroke();
 
-                // Draw count if multiple trucks
                 if (trucksAtPos.length > 1) {
                     ctx.fillStyle = '#fff';
                     ctx.font = 'bold 12px Arial';
                     ctx.textAlign = 'center';
-                    ctx.fillText(trucksAtPos.length, sx, sy + 1);
+                    ctx.fillText(trucksAtPos.length, s[0], s[1] + 1);
                 } else {
-                    // Draw ID for single truck
                     ctx.fillStyle = '#000';
                     ctx.font = 'bold 10px Arial';
                     ctx.textAlign = 'center';
-                    ctx.fillText(truck.id, sx, sy + 1);
+                    ctx.fillText(truck.id, s[0], s[1] + 1);
                 }
             });
+        }
 
-            // Draw info panel
+        function drawEntryPinLayer() {
+            if (!simulationState.entryPoint) {
+                return;
+            }
+
+            const s = toScreen(simulationState.entryPoint.x, simulationState.entryPoint.y);
+            ctx.strokeStyle = '#4caf50';
+            ctx.fillStyle = 'rgba(76, 175, 80, 0.2)';
+            ctx.lineWidth = 2;
+
+            ctx.beginPath();
+            ctx.arc(s[0], s[1], 9, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+
+            ctx.beginPath();
+            ctx.moveTo(s[0] - 7, s[1]);
+            ctx.lineTo(s[0] + 7, s[1]);
+            ctx.moveTo(s[0], s[1] - 7);
+            ctx.lineTo(s[0], s[1] + 7);
+            ctx.stroke();
+        }
+
+        function drawHud() {
+            if (!simulationState.state) {
+                return;
+            }
+
+            const state = simulationState.state;
             ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
-            ctx.fillRect(8, 8, 280, 50);
-            
+            ctx.fillRect(8, 8, 310, 62);
             ctx.fillStyle = '#fff';
             ctx.font = 'bold 14px Arial';
             ctx.textAlign = 'left';
-            ctx.fillText(`Trucks: ${state.active_trucks} | Dumps: ${state.metrics.total_dumps}`, 15, 28);
+            ctx.fillText('Trucks: ' + state.active_trucks + ' | Dumps: ' + state.metrics.total_dumps, 15, 28);
             ctx.font = '11px Arial';
-            ctx.fillText(`Packing: ${(state.metrics.packing_density * 100).toFixed(1)}% | Fleet: ${(state.metrics.fleet_utilization * 100).toFixed(0)}%`, 15, 43);
-            ctx.fillText(`Max Height: ${state.metrics.max_pile_height.toFixed(1)}m | Slope: ${(state.metrics.average_pile_slope * 57.3).toFixed(1)}°`, 15, 55);
+            ctx.fillText('Packing: ' + (state.metrics.packing_density * 100).toFixed(1) + '% | Fleet: ' + (state.metrics.fleet_utilization * 100).toFixed(0) + '%', 15, 43);
+            ctx.fillText('Max Height: ' + state.metrics.max_pile_height.toFixed(1) + 'm | Spacing: ' + (state.metrics.avg_spacing || 0).toFixed(2) + 'm', 15, 58);
         }
 
-        // Event listeners
-        document.getElementById('init-btn').addEventListener('click', initializeSimulation);
-        
-        document.getElementById('play-btn').addEventListener('click', async () => {
-            simulationState.isRunning = true;
-            const speed = parseInt(document.getElementById('speed-slider').value);
-            
-            const animate = async () => {
-                for (let i = 0; i < speed; i++) {
-                    if (!simulationState.isRunning) break;
-                    await stepSimulation();
-                }
-                if (simulationState.isRunning) {
-                    simulationState.animationId = requestAnimationFrame(animate);
-                }
-            };
-            
-            animate();
-        });
+        function draw() {
+            updateViewTransform();
 
-        document.getElementById('pause-btn').addEventListener('click', () => {
-            simulationState.isRunning = false;
-            if (simulationState.animationId) {
-                cancelAnimationFrame(simulationState.animationId);
+            // ISSUE 2 CHANGE: strict render order each frame.
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.35)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // 1) Polygon fill + outline
+            drawPolygonLayer();
+            // 2) Zone boundaries + labels
+            drawZoneLayer();
+            // 3) Dump piles
+            drawDumpPilesLayer();
+            // 4) Trucks
+            drawTrucksLayer();
+            // 5) Entry pin (always on top)
+            drawEntryPinLayer();
+            // HUD text
+            drawHud();
+
+            if (!simulationState.metadata && !simulationState.drawMode) {
+                ctx.fillStyle = '#fff';
+                ctx.font = '16px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText('Click Initialize or Draw Yard to start', canvas.width / 2, canvas.height / 2);
+            }
+        }
+
+        function getCanvasCoordinates(event) {
+            const rect = canvas.getBoundingClientRect();
+            return [
+                event.clientX - rect.left,
+                event.clientY - rect.top,
+            ];
+        }
+
+        canvas.addEventListener('click', async (event) => {
+            const screen = getCanvasCoordinates(event);
+
+            if (simulationState.drawMode) {
+                let screenX = screen[0];
+                let screenY = screen[1];
+
+                // Keep preview points inside visible canvas with padding.
+                screenX = Math.max(20, Math.min(canvas.width - 20, screenX));
+                screenY = Math.max(20, Math.min(canvas.height - 20, screenY));
+
+                // In draw mode, store raw pixel coordinates; normalize on submit.
+                simulationState.drawnPolygonPoints.push([screenX, screenY]);
+                setDrawingStatus('Point added (' + simulationState.drawnPolygonPoints.length + '). Click Finish Polygon when ready.');
+                draw();
+                return;
+            }
+
+            const world = toWorld(screen[0], screen[1]);
+            const worldX = world[0];
+            const worldY = world[1];
+
+            if (simulationState.awaitingEntryPoint || simulationState.moveEntryMode) {
+                const polygonPoints = getActivePolygonPoints();
+                if (polygonPoints.length < 3 || !simulationState.polygonFinished) {
+                    setDrawingStatus('Finish polygon first before setting entry point.');
+                    return;
+                }
+
+                if (!isPointInPolygon([worldX, worldY], polygonPoints)) {
+                    setDrawingStatus('Entry point must be inside polygon.');
+                    return;
+                }
+
+                simulationState.entryPoint = { x: worldX, y: worldY };
+                const success = await submitEntryPoint(worldX, worldY);
+                if (success) {
+                    simulationState.awaitingEntryPoint = false;
+                    simulationState.moveEntryMode = false;
+                    setDrawingStatus('Entry point set. Use Move Entry Point to reposition anytime.');
+                    await updateState();
+                    draw();
+                }
             }
         });
 
-        document.getElementById('step-btn').addEventListener('click', stepSimulation);
-        document.getElementById('reset-btn').addEventListener('click', resetSimulation);
-
-        document.getElementById('speed-slider').addEventListener('change', (e) => {
-            document.getElementById('speed-value').textContent = e.target.value;
+        document.getElementById('init-btn').addEventListener('click', async () => {
+            await initializeSimulation();
         });
 
-        // Auto-redraw
-        let lastUpdate = 0;
-        setInterval(() => {
+        // ISSUE 3 CHANGE: interval-based simulation loop with clearable timer.
+        document.getElementById('play-btn').addEventListener('click', () => {
+            startSimulationLoop();
+        });
+
+        // ISSUE 3 CHANGE: Pause clears interval correctly.
+        document.getElementById('pause-btn').addEventListener('click', () => {
+            stopSimulationLoop();
+        });
+
+        document.getElementById('step-btn').addEventListener('click', async () => {
+            if (!simInterval) {
+                await stepSimulation();
+            }
+        });
+
+        document.getElementById('reset-btn').addEventListener('click', resetSimulation);
+
+        document.getElementById('draw-yard-btn').addEventListener('click', () => {
+            resetCanvasStateForDrawing();
+            simulationState.drawMode = true;
+            setDrawingStatus('Draw mode enabled: left-click to add points.');
             draw();
-        }, 50);
+        });
+
+        document.getElementById('finish-polygon-btn').addEventListener('click', async () => {
+            if (!simulationState.drawMode) {
+                setDrawingStatus('Draw mode is not active. Click Draw Yard first.');
+                return;
+            }
+
+            if (simulationState.drawnPolygonPoints.length < 3) {
+                setDrawingStatus('Polygon needs at least 3 points.');
+                return;
+            }
+
+            // Sort once at finish time to reduce self-intersections.
+            simulationState.drawnPolygonPoints = sortPointsClockwise(simulationState.drawnPolygonPoints);
+
+            simulationState.drawMode = false;
+            simulationState.polygonFinished = true;
+            rebuildZoneVisuals();
+            setDrawingStatus('Saving polygon...');
+
+            const success = await submitPolygon(simulationState.drawnPolygonPoints);
+            if (!success) {
+                simulationState.polygonFinished = false;
+                return;
+            }
+
+            simulationState.awaitingEntryPoint = true;
+            simulationState.moveEntryMode = false;
+            setDrawingStatus('Click inside polygon to set entry point');
+            draw();
+        });
+
+        document.getElementById('move-entry-btn').addEventListener('click', () => {
+            if (!simulationState.polygonFinished) {
+                setDrawingStatus('Draw and finish polygon first.');
+                return;
+            }
+            simulationState.awaitingEntryPoint = true;
+            simulationState.moveEntryMode = true;
+            setDrawingStatus('Move Entry Point enabled: click inside polygon to place new entry.');
+        });
+
+        document.getElementById('speed-slider').addEventListener('input', (e) => {
+            document.getElementById('speed-value').textContent = e.target.value;
+            if (simInterval) {
+                stopSimulationLoop();
+                startSimulationLoop();
+            }
+        });
+
+        document.addEventListener('keydown', (e) => {
+            if (simulationState.drawMode && (e.key === 'Backspace' || e.key === 'Delete')) {
+                e.preventDefault();
+                if (simulationState.drawnPolygonPoints.length > 0) {
+                    simulationState.drawnPolygonPoints.pop();
+                    draw();
+                }
+                setDrawingStatus('Point removed. ' + simulationState.drawnPolygonPoints.length + ' points remaining.');
+            }
+        });
+
+        setInterval(draw, 50);
     </script>
 </body>
 </html>

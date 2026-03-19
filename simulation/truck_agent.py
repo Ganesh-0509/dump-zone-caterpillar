@@ -34,8 +34,14 @@ class Truck:
     assigned_zone: Optional[Polygon] = None
     target_x: float = 0.0
     target_y: float = 0.0
-    dump_grid_x: int = 0
-    dump_grid_y: int = 0
+    dump_grid_x: int = -1
+    dump_grid_y: int = -1
+    has_dump_spot: bool = field(default=False, init=False)
+    waiting_for_dump_slot: bool = field(default=False, init=False)
+    approach_stage: int = field(default=0, init=False)
+    return_stage: int = field(default=0, init=False)
+    dump_timer: int = field(default=0, init=False)
+    DUMP_DURATION: int = 3  # steps to spend dumping
     state: TruckState = TruckState.IDLE
     distance_traveled: float = field(default=0.0, init=False)
     
@@ -137,8 +143,8 @@ class Truck:
         Returns True if final target reached, False otherwise.
         """
         if not self.path or self.current_path_index >= len(self.path):
-            # No path or reached end
-            return True
+            # No path means no progress this step; do not report target reached.
+            return False
             
         # Get target cell
         target_grid_node = self.path[self.current_path_index]
@@ -210,6 +216,7 @@ class Truck:
         """Set truck's dump grid location."""
         self.dump_grid_x = dump_grid_x
         self.dump_grid_y = dump_grid_y
+        self.has_dump_spot = True
 
     def __repr__(self) -> str:
         """String representation of truck."""
